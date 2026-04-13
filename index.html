@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>HTML ↔ Canvas ↔ HTML ↔ ∞</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #060610;
+      color: #ccc;
+      font-family: 'Courier New', monospace;
+      height: 100vh; width: 100vw;
+      overflow: hidden;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .hud {
+      position: fixed; top: 14px; right: 14px; z-index: 100;
+      background: rgba(6,6,16,0.88); border: 1px solid #2a4a6a;
+      border-radius: 6px; padding: 8px 14px;
+      display: flex; align-items: center; gap: 10px;
+      backdrop-filter: blur(8px);
+      font-size: 11px; color: #89a; letter-spacing: 1px;
+    }
+    .hud input[type="range"] { width: 110px; accent-color: #4af; cursor: pointer; }
+    .hud .val { font-size: 18px; font-weight: bold; color: #4af; min-width: 22px; text-align: center; }
+    .hud button {
+      background: #1a3a5c; border: 1px solid #4af; color: #4af;
+      padding: 4px 12px; border-radius: 4px; cursor: pointer;
+      font-family: inherit; font-size: 11px; letter-spacing: 1px;
+      transition: all 0.2s;
+    }
+    .hud button:hover { background: #2a5a8c; box-shadow: 0 0 10px #4af44; }
+    .hud-info {
+      position: fixed; bottom: 10px; right: 14px; z-index: 100;
+      font-size: 9px; color: #2a3040; letter-spacing: 1px;
+      text-align: right; line-height: 1.7;
+    }
+    .hud-info code { color: #3a4a5a; }
+    #canvasMount {
+      width: 100vw; height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+      perspective: 900px; perspective-origin: 50% 50%;
+    }
+    /* ── Fullscreen fallback overlay ── */
+    .fallback-overlay {
+      position: fixed; inset: 0; z-index: 200;
+      background: #060610;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .fallback-box {
+      max-width: 560px; text-align: center; padding: 40px;
+      border: 1px solid #2a4a6a; border-radius: 10px;
+      background: #0a0a1a;
+    }
+    .fallback-box h2 { color: #4af; font-size: 20px; letter-spacing: 3px; margin-bottom: 20px; }
+    .fallback-box p { color: #89a; font-size: 13px; line-height: 2; letter-spacing: 1px; }
+    .fallback-box code { color: #4af; background: #111; padding: 2px 6px; border-radius: 3px; font-size: 12px; }
+    .fallback-box .step { color: #5a7a9a; text-align: left; margin-top: 20px; line-height: 2.4; }
+    .fallback-box .step span { color: #4af; font-weight: bold; }
+    .fallback-box .arrow { font-size: 28px; color: #4af; margin: 18px 0 8px; }
+  </style>
+</head>
+<body>
+
+<div class="hud" id="hud" style="display:none;">
+  <span>DEPTH</span>
+  <input type="range" id="depthSlider" min="1" max="128" value="4" />
+  <span class="val" id="depthDisplay">4</span>
+  <button id="renderBtn">▶ GO</button>
+</div>
+
+<div id="canvasMount"></div>
+
+<div class="hud-info" id="hudInfo" style="display:none;">
+  <code>canvas[layoutsu128ree]</code> · <code>drawElementImage()</code><br/>
+  <code>chrome://flags/#canvas-draw-element</code>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+// API check — show helpful guide if unavailable
+// ═══════════════════════════════════════════════════════════════
+function checkAPI() {
+  const c = document.createElement('canvas');
+  const ctx = c.getContext('2d');
+  return ctx && typeof ctx.drawElementImage === 'function';
+}
+
+function showFallback() {
+  const mount = document.getElementById('canvasMount');
+  mount.innerHTML = '';
+  const ov = document.createElement('div');
+  ov.className = 'fallback-overlay';
+  ov.innerHTML = `
+    <div class="fallback-box">
+      <h2>⚠ HTML-IN-CANVAS API NOT DETECTED</h2>
+      <p>This demo requires the experimental<br/>
+        <code>drawElementImage()</code> API.</p>
+      <div class="arrow">↓</div>
+      <div class="step">
+        <span>1.</span> Install <b style="color:#7ef">Google Chrome Canary</b><br/>
+        <span>2.</span> Open <code>chrome://flags/#canvas-draw-element</code><br/>
+        <span>3.</span> Set to <b style="color:#4f8">Enabled</b><br/>
+        <span>4.</span> Click <b style="color:#ff8">Relaunch</b> at the bottom<br/>
+        <span>5.</span> Come back to this page and refresh
+      </div>
+      <p style="margin-top:24px;font-size:11px;color:#445;">
+        The <code>layoutsubtree</code> attribute and <code>drawElementImage()</code><br/>
+        are part of the <a href="https://github.com/WICG/html-in-canvas"
+          style="color:#4af;" target="_blank">WICG HTML-in-Canvas proposal</a>.
+      </p>
+    </div>
+  `;
+  document.body.appendChild(ov);
+}
+
+if (!checkAPI()) {
+  showFallback();
+} else {
+  document.getElementById('hud').style.display = 'flex';
+  document.getElementById('hudInfo').style.display = 'block';
+  initDemo();
+}
+
+function initDemo() {
+
+// ═══════════════════════════════════════════════════════════════
+// Config — SCALE increased to 0.78 so inner content stays large
+// ═══════════════════════════════════════════════════════════════
+const SCALE = 0.78;
+
+// Padding consumed by top bar + bottom bar + monitor shell chrome
+const BAR_H = 16; // top + bottom combined
+const SHELL_PAD = 14; // monitor bezel/housing overhead
+
+const THEMES = [
+  { bg:'#0d1b2a', border:'#1a6090', accent:'#4af0e0', text:'#7ef0ff', dim:'#2a5070', label:'L0', glyph:'⌬' },
+  { bg:'#1a0d2a', border:'#6a1a90', accent:'#c04af0', text:'#e07eff', dim:'#4a2070', label:'L1', glyph:'◈' },
+  { bg:'#0d2a1a', border:'#1a9050', accent:'#4af090', text:'#7effa0', dim:'#205040', label:'L2', glyph:'⬡' },
+  { bg:'#2a1a0d', border:'#904a1a', accent:'#f0904a', text:'#ffb07e', dim:'#704020', label:'L3', glyph:'◉' },
+  { bg:'#2a0d1a', border:'#901a4a', accent:'#f04a90', text:'#ff7eb0', dim:'#702040', label:'L4', glyph:'⬟' },
+  { bg:'#0d1a2a', border:'#1a4a90', accent:'#4a90f0', text:'#7eb0ff', dim:'#203060', label:'L5', glyph:'⬢' },
+  { bg:'#1a2a0d', border:'#6a901a', accent:'#c0f04a', text:'#e0ff7e', dim:'#4a7020', label:'L6', glyph:'◆' },
+  { bg:'#2a0d0d', border:'#901a1a', accent:'#f04a4a', text:'#ff7e7e', dim:'#702020', label:'L7', glyph:'✦' },
+];
+function theme(l) { return THEMES[l % THEMES.length]; }
+
+// Fun quotes to fill margins
+const MARGIN_QUOTES = [
+  'RECURSION: SEE RECURSION',
+  'IT\'S TURTLES ALL THE WAY DOWN',
+  'CANVAS → HTML → CANVAS → …',
+  'DROSTE EFFECT ACTIVATED',
+  'MISE EN ABYME',
+  'SELF-SIMILAR AT EVERY SCALE',
+  'THE MAP CONTAINS THE MAP',
+  '∞ LEVELS DEEP',
+  'A DREAM WITHIN A DREAM',
+  'FRACTAL UI ENGAGED',
+  'LOOK CLOSER…',
+  'DEEPER AND DEEPER',
+];
+function randomQuote(seed) {
+  return MARGIN_QUOTES[Math.abs(seed * 2654435761 | 0) % MARGIN_QUOTES.length];
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Mouse tracking + dirty flag for perf
+// ═══════════════════════════════════════════════════════════════
+let mouseX = 0, mouseY = 0;
+let prevMX = 0, prevMY = 0;
+let mouseDirty = true;
+document.addEventListener('mousemove', (e) => {
+  mouseX = (e.clientX / window.innerWidth  - 0.5) * 2;
+  mouseY = (e.clientY / window.innerHeight - 0.5) * 2;
+});
+
+// ═══════════════════════════════════════════════════════════════
+// DOM helpers
+// ═══════════════════════════════════════════════════════════════
+function el(tag, css, html) {
+  const e = document.createElement(tag);
+  if (css) e.style.cssText = css;
+  if (html) e.innerHTML = html;
+  return e;
+}
+function app(p, ...ch) { ch.forEach(c => p.appendChild(c)); return p; }
+
+// ═══════════════════════════════════════════════════════════════
+// Hover styles (injected per wrapper)
+// ═══════════════════════════════════════════════════════════════
+function injectHoverStyles(wrap, level) {
+  const t = theme(level);
+  const id = `lv${level}_${Math.random().toString(36).slice(2,8)}`;
+  wrap.setAttribute('data-lid', id);
+  const s = document.createElement('style');
+  s.textContent = `
+    [data-lid="${id}"] .hv-bar { transition: background 0.3s, box-shadow 0.3s, color 0.3s; }
+    [data-lid="${id}"] .hv-bar:hover {
+      background: ${t.accent} !important; color: ${t.bg} !important;
+      box-shadow: 0 0 10px ${t.accent}88;
+    }
+    [data-lid="${id}"] .hv-glyph {
+      transition: transform 0.4s, text-shadow 0.4s, filter 0.4s; cursor: default;
+    }
+    [data-lid="${id}"] .hv-glyph:hover {
+      transform: scale(1.3) rotate(15deg);
+      text-shadow: 0 0 40px ${t.accent}, 0 0 80px ${t.accent}88;
+      filter: brightness(1.4);
+    }
+    [data-lid="${id}"] .hv-title { transition: letter-spacing 0.3s, text-shadow 0.3s, color 0.3s; cursor: default; }
+    [data-lid="${id}"] .hv-title:hover {
+      letter-spacing: 8px; text-shadow: 0 0 20px ${t.accent}; color: #fff;
+    }
+    [data-lid="${id}"] .hv-tag { transition: all 0.3s; cursor: default; }
+    [data-lid="${id}"] .hv-tag:hover {
+      background: ${t.accent}22; border-color: ${t.accent}; color: ${t.accent};
+      box-shadow: 0 0 8px ${t.accent}44; transform: scale(1.05);
+    }
+    [data-lid="${id}"] .hv-badge { transition: all 0.25s; cursor: default; }
+    [data-lid="${id}"] .hv-badge:hover {
+      background: ${t.accent}; color: ${t.bg};
+      transform: translateY(-1px); box-shadow: 0 2px 8px ${t.accent}66;
+    }
+    [data-lid="${id}"] .hv-bracket { transition: all 0.3s; }
+    [data-lid="${id}"] .hv-bracket:hover {
+      border-color: ${t.accent} !important; box-shadow: 0 0 6px ${t.accent}66;
+      width: 18px !important; height: 18px !important;
+    }
+    [data-lid="${id}"] .hv-quote { transition: all 0.3s; cursor: default; }
+    [data-lid="${id}"] .hv-quote:hover {
+      color: ${t.accent} !important; text-shadow: 0 0 6px ${t.accent}44;
+      letter-spacing: 2px;
+    }
+    [data-lid="${id}"] .hv-dot { transition: all 0.3s; cursor: default; }
+    [data-lid="${id}"] .hv-dot:hover {
+      background: ${t.accent} !important; box-shadow: 0 0 8px ${t.accent};
+      transform: scale(2);
+    }
+  `;
+  wrap.appendChild(s);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Margin filler — decorative content around the monitor shell
+// ═══════════════════════════════════════════════════════════════
+function fillMargins(wrap, level, w, h, iW, iH) {
+  const t = theme(level);
+  // Compute the gap around the centered inner region
+  const gapX = (w - iW) / 2;
+  const gapTop = 20; // below top bar
+  const gapBot = 16; // above bottom bar
+
+  // Only fill if there's enough space
+  if (gapX < 30 && (h - iH) < 40) return;
+
+  // ── Floating quote (left side) ──
+  if (gapX > 40) {
+    const q = el('div', `
+      position:absolute; top:50%; left:6px; z-index:2;
+      transform: translateY(-50%) rotate(-90deg);
+      transform-origin: center center;
+      font-size:7px; letter-spacing:3px; color:${t.dim}44;
+      white-space:nowrap;
+    `);
+    q.className = 'hv-quote';
+    q.textContent = randomQuote(level * 7 + 1);
+    app(wrap, q);
+  }
+
+  // ── Floating quote (right side) ──
+  if (gapX > 40) {
+    const q2 = el('div', `
+      position:absolute; top:50%; right:6px; z-index:2;
+      transform: translateY(-50%) rotate(90deg);
+      transform-origin: center center;
+      font-size:7px; letter-spacing:3px; color:${t.dim}44;
+      white-space:nowrap;
+    `);
+    q2.className = 'hv-quote';
+    q2.textContent = randomQuote(level * 7 + 3);
+    app(wrap, q2);
+  }
+
+  // ── Dot grid in top-left corner ──
+  if (gapX > 35 && h > 100) {
+    const grid = el('div', `
+      position:absolute; top:${gapTop + 6}px; left:6px; z-index:2;
+      display:grid; grid-template-columns:repeat(3,6px); gap:4px;
+    `);
+    for (let i = 0; i < 6; i++) {
+      const dot = el('div', `
+        width:4px; height:4px; border-radius:50%;
+        background:${t.dim}33;
+      `);
+      dot.className = 'hv-dot';
+      app(grid, dot);
+    }
+    app(wrap, grid);
+  }
+
+  // ── Tiny bar chart decoration in bottom-right ──
+  if (gapX > 35 && h > 100) {
+    const bars = el('div', `
+      position:absolute; bottom:${gapBot + 4}px; right:6px; z-index:2;
+      display:flex; align-items:flex-end; gap:2px;
+    `);
+    const heights = [6, 10, 4, 12, 8, 3];
+    heights.forEach(bh => {
+      const bar = el('div', `
+        width:3px; height:${bh}px;
+        background:${t.dim}33;
+        border-radius:1px;
+        transition: background 0.2s, height 0.2s;
+      `);
+      bar.className = 'hv-dot';
+      app(bars, bar);
+    });
+    app(wrap, bars);
+  }
+
+  // ── "DEPTH N" label in top-right margin ──
+  if (gapX > 50) {
+    const depthLabel = el('div', `
+      position:absolute; top:${gapTop + 8}px; right:8px; z-index:2;
+      font-size:7px; letter-spacing:2px; color:${t.dim}55;
+    `);
+    depthLabel.className = 'hv-badge';
+    depthLabel.textContent = `D${level}`;
+    app(wrap, depthLabel);
+  }
+
+  // ── Bottom center quote ──
+  if ((h - iH) > 50) {
+    const bq = el('div', `
+      position:absolute; bottom:${gapBot + 3}px; left:50%;
+      transform:translateX(-50%);
+      font-size:6px; letter-spacing:2px; color:${t.dim}33;
+      white-space:nowrap; z-index:2;
+    `);
+    bq.className = 'hv-quote';
+    bq.textContent = randomQuote(level * 13 + 5);
+    app(wrap, bq);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Per-level HTML wrapper — compact bars
+// ═══════════════════════════════════════════════════════════════
+function buildWrapper(level, w, h) {
+  const t = theme(level);
+  const wrap = el('div', `
+    width:${w}px; height:${h}px; background:${t.bg};
+    position:relative; overflow:hidden;
+    font-family:'Courier New',monospace; color:${t.text};
+  `);
+  injectHoverStyles(wrap, level);
+
+  // Subtle scanlines
+  app(wrap, el('div', `
+    position:absolute; inset:0; z-index:99; pointer-events:none;
+    background:repeating-linear-gradient(
+      to bottom, transparent 0, transparent 4px,
+      rgba(0,0,0,0.05) 4px, rgba(0,0,0,0.05) 5px);
+  `));
+
+  // Top bar — THIN: 16px
+  const topH = h > 60 ? 16 : 10;
+  const topBar = el('div', `
+    position:absolute; top:0; left:0; right:0; z-index:10; height:${topH}px;
+    background:${t.border}; display:flex; align-items:center;
+    justify-content:space-between; padding:0 6px;
+    font-size:${topH > 12 ? 8 : 6}px; letter-spacing:2px; color:${t.bg}; font-weight:bold;
+    cursor:default;
+  `);
+  topBar.className = 'hv-bar';
+  topBar.innerHTML = `<span>${t.label}</span><span style="opacity:0.6;">${t.glyph}</span>`;
+  app(wrap, topBar);
+
+  // Corner brackets
+  if (w > 80 && h > 60) {
+    const off = topH + 3;
+    const bk = (pos, brd) => {
+      const b = el('div', `position:absolute;${pos};width:10px;height:10px;z-index:10;${brd}`);
+      b.className = 'hv-bracket';
+      return b;
+    };
+    app(wrap,
+      bk(`top:${off}px;left:5px`, `border-top:1px solid ${t.accent}44;border-left:1px solid ${t.accent}44;`),
+      bk(`top:${off}px;right:5px`, `border-top:1px solid ${t.accent}44;border-right:1px solid ${t.accent}44;`),
+      bk(`bottom:${topH}px;left:5px`, `border-bottom:1px solid ${t.accent}44;border-left:1px solid ${t.accent}44;`),
+      bk(`bottom:${topH}px;right:5px`, `border-bottom:1px solid ${t.accent}44;border-right:1px solid ${t.accent}44;`)
+    );
+  }
+
+  // Badge
+  if (w > 160) {
+    const badge = el('div', `
+      position:absolute; top:${topH + 4}px; left:5px; z-index:5;
+      font-size:6px; letter-spacing:1px; color:${t.dim}88;
+      padding:1px 4px; border:1px solid ${t.dim}33;
+    `);
+    badge.className = 'hv-badge';
+    badge.textContent = `CANVAS-${level}`;
+    app(wrap, badge);
+  }
+
+  // Bottom bar — THIN: 12px
+  const botH = h > 60 ? 12 : 8;
+  const bottomBar = el('div', `
+    position:absolute; bottom:0; left:0; right:0; z-index:10; height:${botH}px;
+    background:${t.bg}dd; display:flex; align-items:center;
+    justify-content:space-between; padding:0 6px;
+    font-size:${botH > 10 ? 7 : 5}px; letter-spacing:1px; color:${t.dim}88; cursor:default;
+    border-top:1px solid ${t.border}33;
+  `);
+  bottomBar.className = 'hv-bar';
+  bottomBar.innerHTML = `<span>HTML</span><span style="color:${t.accent}88">${t.glyph}</span><span>CANVAS</span>`;
+  app(wrap, bottomBar);
+
+  return wrap;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Monitor shell — minimal chrome, maximum screen
+// ═══════════════════════════════════════════════════════════════
+function buildMonitorShell(innerCanvas, level, innerW, innerH, extraH) {
+  const t = theme(level);
+
+  // Ultra-compact: just a thin border
+  if (extraH < 12) {
+    const wrap = el('div', `position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);`);
+    const frame = el('div', `border:1px solid ${t.border}88; background:#000;`);
+    app(frame, innerCanvas);
+    app(wrap, frame);
+    return wrap;
+  }
+
+  const pad = Math.max(2, Math.min(5, Math.round(extraH * 0.04)));
+
+  const housing = el('div', `
+    background:linear-gradient(145deg,#555 0%,#333 40%,#222 60%,#444 100%);
+    border-radius:4px; padding:${pad}px;
+    box-shadow:0 0 0 1px #111, 0 2px 8px rgba(0,0,0,0.6),
+               inset 0 1px 0 rgba(255,255,255,0.06);
+  `);
+
+  // Brand strip — only if space
+  if (extraH > 20) {
+    app(housing, el('div', `
+      display:flex; align-items:center; justify-content:space-between;
+      padding:0 3px 2px 3px;
+      font-size:6px; letter-spacing:2px; color:#555;
+    `, `<span>RECURSOTRON™ ${level}K</span>
+        <span style="width:4px;height:4px;border-radius:50%;background:${t.accent};
+          box-shadow:0 0 3px ${t.accent};display:inline-block;"></span>`));
+  }
+
+  const bezel = el('div', `
+    border:2px solid #1a1a1a; border-radius:2px; background:#000; padding:1px;
+    box-shadow:inset 0 0 4px rgba(0,0,0,0.95);
+  `);
+  const screen = el('div', `
+    border:1px solid ${t.border}33; overflow:hidden;
+    width:${innerW}px; height:${innerH}px;
+  `);
+  app(screen, innerCanvas);
+  app(bezel, screen);
+  app(housing, bezel);
+
+  if (extraH > 20) {
+    app(housing, el('div', `
+      height:2px; margin-top:2px;
+      background:linear-gradient(#555,#333); border-radius:0 0 2px 2px;
+    `));
+  }
+
+  const container = el('div', `
+    position:absolute; top:50%; left:50%;
+    transform:translate(-50%,-50%);
+    display:flex; flex-direction:column; align-items:center;
+  `);
+  app(container, housing);
+
+  // Stand
+  if (extraH >= 35) {
+    app(container,
+      el('div', `width:${Math.max(6,Math.round(innerW*0.04))}px;height:6px;background:linear-gradient(90deg,#333,#444,#333);`),
+      el('div', `width:${Math.max(14,Math.round(innerW*0.15))}px;height:3px;background:linear-gradient(#444,#222);border-radius:0 0 3px 3px;`)
+    );
+  }
+
+  return container;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Innermost content
+// ═══════════════════════════════════════════════════════════════
+function buildInnermostContent(wrapper, level, w, h) {
+  const t = theme(level);
+  const gs = Math.max(12, Math.min(48, Math.round(h * 0.14)));
+  const ts = Math.max(7, Math.min(22, Math.round(h * 0.07)));
+  const ss = Math.max(5, Math.min(9, Math.round(h * 0.025)));
+
+  const center = el('div', `
+    position:absolute; top:50%; left:50%;
+    transform:translate(-50%,-50%);
+    text-align:center; z-index:5;
+  `);
+
+  const glyph = el('div', `
+    font-size:${gs}px;line-height:1;color:${t.accent};
+    text-shadow:0 0 20px ${t.accent}66; display:inline-block;
+  `);
+  glyph.className = 'hv-glyph';
+  glyph.textContent = t.glyph;
+
+  const title = el('div', `
+    margin-top:4px;font-size:${ts}px;font-weight:bold;
+    letter-spacing:3px;color:${t.accent};text-shadow:0 0 10px ${t.accent};
+  `);
+  title.className = 'hv-title';
+  title.textContent = `LEVEL ${level}`;
+
+  const tag = el('div', `
+    margin-top:4px;font-size:${ss}px;color:${t.dim};
+    letter-spacing:1px;border:1px solid ${t.dim}55;padding:1px 5px;
+    display:inline-block;
+  `);
+  tag.className = 'hv-tag';
+  tag.textContent = '∞';
+
+  app(center, glyph, title, tag);
+  app(wrapper, center);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Recursive level builder
+// ═══════════════════════════════════════════════════════════════
+let allCanvases = [];
+
+function createLevel(level, maxDepth, w, h) {
+  const canvas = document.createElement('canvas');
+  canvas.width  = w;
+  canvas.height = h;
+  canvas.style.cssText = `width:${w}px;height:${h}px;display:block;transform-style:preserve-3d;`;
+  canvas.setAttribute('layoutsubtree', '');
+
+  const wrapper = buildWrapper(level, w, h);
+
+  if (level < maxDepth) {
+    // Inner size: SCALE of current, minus bars/shell chrome
+    const iW = Math.round(w * SCALE);
+    const iH = Math.round(h * SCALE);
+    const extraH = h - iH - SHELL_PAD;
+    const inner = createLevel(level + 1, maxDepth, iW, iH);
+    app(wrapper, buildMonitorShell(inner, level, iW, iH, extraH));
+
+    // Fill margins with decorative content
+    fillMargins(wrapper, level, w, h, iW, iH);
+  } else {
+    buildInnermostContent(wrapper, level, w, h);
+  }
+
+  canvas.appendChild(wrapper);
+  allCanvases.push({ canvas, level, w, h, wrapper });
+
+  const ctx = canvas.getContext('2d');
+
+  canvas.onpaint = () => {
+    if (typeof ctx.reset === 'function') {
+      ctx.reset();
+    } else {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+    }
+    try {
+      const transform = ctx.drawElementImage(wrapper, 0, 0, w, h);
+      if (transform) wrapper.style.transform = transform.toString();
+    } catch (e) {
+      // Paint record not yet cached — skip this frame, will retry on next requestPaint
+    }
+  };
+
+  return canvas;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// Build, mount, animate — with dirty-flag perf optimization
+// ═══════════════════════════════════════════════════════════════
+const mount = document.getElementById('canvasMount');
+let rafId = null;
+
+function buildAndMount(depth) {
+  if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+  allCanvases = [];
+  mount.innerHTML = '';
+
+  const W = Math.min(window.innerWidth - 10, 1300);
+  const H = Math.min(window.innerHeight - 10, 900);
+
+  const outer = createLevel(0, depth, W, H);
+  mount.appendChild(outer);
+
+  let smX = 0, smY = 0;
+  let lastTStr = ''; // cache transform strings to skip no-op updates
+  const tCache = new Array(allCanvases.length).fill('');
+
+  // Threshold for "mouse is still"
+  const MOUSE_EPS = 0.002;
+  const DRIFT_INTERVAL = 80; // only recalc slow drift every N ms
+  let lastDriftT = 0;
+  let driftValues = allCanvases.map(() => ({ ry:0, rx:0, rz:0 }));
+
+  function calcDrift(t) {
+    const sp = 0.0003;
+    for (let i = 0; i < allCanvases.length; i++) {
+      const level = allCanvases[i].level;
+      driftValues[i] = {
+        ry: Math.sin(t * sp       + level * 1.4 + 0.5) * (2 + level * 0.7),
+        rx: Math.cos(t * sp * 0.6 + level * 0.9 + 1.3) * (1.5 + level * 0.4),
+        rz: Math.sin(t * sp * 0.4 + level * 2.1) * (level * 0.25),
+      };
+    }
+  }
+
+  function animate(t) {
+    // Smooth mouse follow
+    const dx = mouseX - smX, dy = mouseY - smY;
+    smX += dx * 0.08;
+    smY += dy * 0.08;
+
+    // Recalc drift periodically (not every frame — it's slow-moving)
+    if (t - lastDriftT > DRIFT_INTERVAL) {
+      calcDrift(t);
+      lastDriftT = t;
+    }
+
+    // Determine if anything changed enough to warrant update
+    const mouseMoving = Math.abs(dx) > MOUSE_EPS || Math.abs(dy) > MOUSE_EPS;
+    // Drift always changes a tiny bit, but we only need to update when drift was recalculated
+    const driftUpdated = (t - lastDriftT) < 20;
+    const needsUpdate = mouseMoving || driftUpdated;
+
+    if (needsUpdate) {
+      for (let i = 0; i < allCanvases.length; i++) {
+        const { canvas, level } = allCanvases[i];
+        const d = driftValues[i];
+
+        const lf = 1 + level * 0.5;
+        const mRotY =  smX * 12 * lf;
+        const mRotX = -smY * 8  * lf;
+
+        const ry = mRotY + d.ry;
+        const rx = mRotX + d.rx;
+        const rz = d.rz;
+        const tz = -level * 4;
+
+        const tStr = `translateZ(${tz.toFixed(1)}px) rotateY(${ry.toFixed(2)}deg) rotateX(${rx.toFixed(2)}deg) rotateZ(${rz.toFixed(2)}deg)`;
+
+        // Only touch DOM if value actually changed
+        if (tStr !== tCache[i]) {
+          canvas.style.transform = tStr;
+          tCache[i] = tStr;
+        }
+
+        if (canvas.requestPaint) canvas.requestPaint();
+      }
+    }
+
+    rafId = requestAnimationFrame(animate);
+  }
+  rafId = requestAnimationFrame(animate);
+}
+
+// ═══════════════════════════════════════════════════════════════
+// UI
+// ═══════════════════════════════════════════════════════════════
+const slider  = document.getElementById('depthSlider');
+const display = document.getElementById('depthDisplay');
+const btn     = document.getElementById('renderBtn');
+
+slider.addEventListener('input', () => { display.textContent = slider.value; });
+btn.addEventListener('click', () => buildAndMount(+slider.value));
+
+buildAndMount(+slider.value);
+
+let resizeTimer;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => buildAndMount(+slider.value), 250);
+});
+
+} // end initDemo
+</script>
+</body>
+</html>
